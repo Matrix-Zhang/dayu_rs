@@ -1,0 +1,22 @@
+[package]
+name = "dayu"
+version = "0.1.0"
+authors = ["Matrix <113445886@qq.com>"]
+description = "Alibaba's Dayu SMS SDK for Rust."
+license = "MIT"
+keywords = ["sms", "dayu"]
+repository = "https://github.com/Matrix-Zhang/dayu_rs"
+readme = "README.md"
+
+[dependencies]
+base64 = "0.9"
+chrono = "0.4"
+failure = "0.1"
+openssl = "0.10"
+reqwest = "0.8"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+textnonce = "0.6"
+url = "1.7"
+urlencoding = "1.0"
