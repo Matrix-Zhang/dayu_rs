@@ -25,6 +25,7 @@
 //!
 //! ```rust
 //! extern crate dayu;
+//!
 //! use dayu::Dayu;
 //!
 //! fn main() {
@@ -32,7 +33,7 @@
 //!     dayu.set_access_key("access_key");
 //!     dayu.set_access_secret("access_secret");
 //!     dayu.set_sign_name("sign_name");
-//!     dayu.send_sms(&["13888888888"], "TEMPLATE_CODE", None, None).unwrap();
+//!     dayu.send_sms(&["13888888888"], "TEMPLATE_CODE", None).unwrap();
 //! }
 //! ```
 
