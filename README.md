@@ -1,4 +1,4 @@
-# Dayu:
+# Dayu
 #### 	A Rust Implement for Alibaba's Dayu SMS SDK.
 
 - [x] Support SMS Send

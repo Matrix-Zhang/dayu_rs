@@ -52,6 +52,7 @@ extern crate url;
 extern crate urlencoding;
 
 use std::collections::BTreeMap;
+use std::fmt::{self, Display, Formatter};
 use std::io::Read;
 
 use chrono::{NaiveDate, Utc};
@@ -71,7 +72,7 @@ pub enum ErrorKind {
     #[fail(display = "config of '{}' absence.", _0)]
     ConfigAbsence(&'static str),
     #[fail(display = "dayu's error: {}", _0)]
-    Dayu(String),
+    Dayu(DayuFailResponse),
     #[fail(display = "openssl error: {}", _0)]
     Openssl(openssl::error::ErrorStack),
     #[fail(display = "page size '{}' too large, max is 50.", _0)]
@@ -88,13 +89,6 @@ pub enum ErrorKind {
     UrlParse(url::ParseError),
 }
 
-#[derive(Default)]
-pub struct Dayu {
-    access_key: String,
-    access_secret: String,
-    sign_name: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct DayuSendResponse {
@@ -104,19 +98,19 @@ pub struct DayuSendResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct DayuQueryDetail {
-    phone_num: String,
-    send_date: String,
-    send_status: u8,
-    receive_date: String,
-    template_code: String,
-    content: String,
-    err_code: String,
+    pub phone_num: String,
+    pub send_date: String,
+    pub send_status: u8,
+    pub receive_date: String,
+    pub template_code: String,
+    pub content: String,
+    pub err_code: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DayuQueryDetails {
     #[serde(rename = "SmsSendDetailDTO")]
-    detail: Vec<DayuQueryDetail>,
+    pub inner: Vec<DayuQueryDetail>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,9 +125,15 @@ pub struct DayuQueryResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct DayuFailResponse {
-    code: String,
-    message: String,
-    request_id: String,
+    pub code: String,
+    pub message: String,
+    pub request_id: String,
+}
+
+impl Display for DayuFailResponse {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string_pretty(self).unwrap())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +142,13 @@ pub enum DayuResponse {
     Send(DayuSendResponse),
     Query(DayuQueryResponse),
     Fail(DayuFailResponse),
+}
+
+#[derive(Default)]
+pub struct Dayu {
+    access_key: String,
+    access_secret: String,
+    sign_name: String,
 }
 
 macro_rules! do_request {
@@ -230,10 +237,7 @@ macro_rules! do_request {
                     })
                     .and_then(|response| match response {
                         DayuResponse::$type(v) => Ok(v),
-                        DayuResponse::Fail(ref fail) => Err(ErrorKind::Dayu(format!(
-                            "{}",
-                            serde_json::to_string_pretty(fail).map_err(ErrorKind::SerdeJson)?
-                        ))),
+                        DayuResponse::Fail(fail) => Err(ErrorKind::Dayu(fail)),
                         _ => unreachable!(),
                     })
             })
