@@ -54,14 +54,14 @@ extern crate urlencoding;
 use std::collections::BTreeMap;
 use std::io::Read;
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
 use serde_json::Value;
 use textnonce::TextNonce;
 use url::Url;
 
+static MAX_PAGE_SIZE: u8 = 50;
 static REQUEST_FORMAT: &str = "JSON";
-static REGION_ID: &str = "cn-hangzhou";
 static SIGN_METHOD: &str = "HMAC-SHA1";
 static SIGNATURE_VERSION: &str = "1.0";
 static VERSION: &str = "2017-05-25";
@@ -74,6 +74,8 @@ pub enum ErrorKind {
     Dayu(String),
     #[fail(display = "openssl error: {}", _0)]
     Openssl(openssl::error::ErrorStack),
+    #[fail(display = "page size '{}' too large, max is 50.", _0)]
+    PageTooLarge(u8),
     #[fail(display = "reqwest error: {}", _0)]
     Reqwest(reqwest::Error),
     #[fail(display = "serde_json error: {}", _0)]
@@ -92,28 +94,150 @@ pub struct Dayu {
     access_secret: String,
     sign_name: String,
 }
-/// return when sms send ok
-#[derive(Deserialize)]
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct DayuSuccess {
-    /// receipt id, used for query
+pub struct DayuSendResponse {
     pub biz_id: String,
-    /// request id
-    pub request_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct DayuFail {
+pub struct DayuQueryDetail {
+    phone_num: String,
+    send_date: String,
+    send_status: u8,
+    receive_date: String,
+    template_code: String,
+    content: String,
+    err_code: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DayuQueryDetails {
+    #[serde(rename = "SmsSendDetailDTO")]
+    detail: Vec<DayuQueryDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DayuQueryResponse {
+    pub total_count: i32,
+    pub total_page: Option<u8>,
+    #[serde(rename = "SmsSendDetailDTOs")]
+    pub details: Option<DayuQueryDetails>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DayuFailResponse {
     code: String,
     message: String,
+    request_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum DayuResponse {
-    Success(DayuSuccess),
-    Fail(DayuFail),
+pub enum DayuResponse {
+    Send(DayuSendResponse),
+    Query(DayuQueryResponse),
+    Fail(DayuFailResponse),
+}
+
+macro_rules! do_request {
+    ($dayu:expr, $action:expr, $params:expr, $type:tt) => {{
+        if $dayu.access_key.is_empty() {
+            return Err(ErrorKind::ConfigAbsence("access_key"));
+        }
+
+        if $dayu.access_secret.is_empty() {
+            return Err(ErrorKind::ConfigAbsence("access_secret"));
+        }
+
+        if $dayu.sign_name.is_empty() {
+            return Err(ErrorKind::ConfigAbsence("sign_name"));
+        }
+
+        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        let text_nonce = TextNonce::sized(32)
+            .map_err(ErrorKind::TextNonce)?
+            .to_string();
+
+        let mut map = BTreeMap::new();
+        map.insert("Format", REQUEST_FORMAT);
+        map.insert("AccessKeyId", &$dayu.access_key);
+        map.insert("SignatureMethod", SIGN_METHOD);
+        map.insert("SignatureNonce", &text_nonce);
+        map.insert("SignatureVersion", SIGNATURE_VERSION);
+        map.insert("Timestamp", &timestamp);
+        map.insert("Action", $action);
+        map.insert("SignName", &$dayu.sign_name);
+        map.insert("Version", VERSION);
+
+        for (name, value) in $params {
+            if !value.is_empty() {
+                map.insert(name, value);
+            }
+        }
+
+        let mut forms = map.into_iter()
+            .map(|(key, value)| (key, urlencoding::encode(value)))
+            .collect::<Vec<(&str, String)>>();
+
+        let mut wait_sign = String::from("GET&%2F&");
+        wait_sign.push_str(&forms
+            .iter()
+            .fold(vec![], |mut wait_sign, &(key, ref value)| {
+                wait_sign.push(urlencoding::encode(&format!("{}={}", key, value)));
+                wait_sign
+            })
+            .join(&urlencoding::encode("&")));
+
+        PKey::hmac(format!("{}&", $dayu.access_secret).as_bytes())
+            .and_then(|pkey| {
+                Signer::new(MessageDigest::sha1(), &pkey).and_then(|mut signer| {
+                    signer
+                        .update(wait_sign.as_bytes())
+                        .and_then(|_| signer.sign_to_vec())
+                })
+            })
+            .map_err(ErrorKind::Openssl)
+            .map(|ref signature| {
+                forms.push(("Signature", urlencoding::encode(&base64::encode(signature))))
+            })
+            .and_then(|_| {
+                Url::parse("http://dysmsapi.aliyuncs.com")
+                    .map_err(ErrorKind::UrlParse)
+                    .map(|mut url| {
+                        url.set_query(Some(&forms
+                            .into_iter()
+                            .map(|(key, value)| format!("{}={}", key, value))
+                            .collect::<Vec<String>>()
+                            .join("&")));
+                        url
+                    })
+                    .and_then(|url| reqwest::get(url).map_err(ErrorKind::Reqwest))
+                    .and_then(|mut response| {
+                        let mut body = String::new();
+                        response
+                            .read_to_string(&mut body)
+                            .map_err(ErrorKind::Stdio)
+                            .map(|_| body)
+                    })
+                    .and_then(|body| {
+                        serde_json::from_str::<DayuResponse>(&body).map_err(ErrorKind::SerdeJson)
+                    })
+                    .and_then(|response| match response {
+                        DayuResponse::$type(v) => Ok(v),
+                        DayuResponse::Fail(ref fail) => Err(ErrorKind::Dayu(format!(
+                            "{}",
+                            serde_json::to_string_pretty(fail).map_err(ErrorKind::SerdeJson)?
+                        ))),
+                        _ => unreachable!(),
+                    })
+            })
+    }};
 }
 
 impl Dayu {
@@ -141,111 +265,57 @@ impl Dayu {
     /// phones: support multi phone number
     /// template_code: SMS TEMPLATE CODE
     /// template_param: SMS TAPLATE PARAMS as JSON
-    pub fn send_sms(
+    pub fn sms_send(
         &self,
         phones: &[&str],
         template_code: &str,
         template_param: Option<&Value>,
-    ) -> Result<DayuSuccess, ErrorKind> {
-        if self.access_key.is_empty() {
-            return Err(ErrorKind::ConfigAbsence("access_key"));
-        }
-
-        if self.access_secret.is_empty() {
-            return Err(ErrorKind::ConfigAbsence("access_secret"));
-        }
-
-        if self.sign_name.is_empty() {
-            return Err(ErrorKind::ConfigAbsence("sign_name"));
-        }
-
-        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-
-        let text_nonce = TextNonce::sized(32)
-            .map_err(ErrorKind::TextNonce)?
-            .to_string();
-
+    ) -> Result<DayuSendResponse, ErrorKind> {
         let phone_numbers = phones.join(",");
-
         let template_param = match template_param {
             Some(param) => serde_json::to_string(param).map_err(ErrorKind::SerdeJson)?,
             None => String::new(),
         };
 
-        let mut map = BTreeMap::new();
-        map.insert("Format", REQUEST_FORMAT);
-        map.insert("AccessKeyId", &self.access_key);
-        map.insert("SignatureMethod", SIGN_METHOD);
-        map.insert("SignatureNonce", &text_nonce);
-        map.insert("SignatureVersion", SIGNATURE_VERSION);
-        map.insert("Timestamp", &timestamp);
+        do_request!(
+            self,
+            "SendSms",
+            &[
+                ("TemplateCode", template_code),
+                ("PhoneNumbers", &phone_numbers),
+                ("TemplateParam", &template_param),
+            ],
+            Send
+        )
+    }
 
-        map.insert("Action", "SendSms");
-        map.insert("PhoneNumbers", &phone_numbers);
-        map.insert("RegionId", REGION_ID);
-        map.insert("SignName", &self.sign_name);
-        map.insert("TemplateCode", template_code);
-
-        if !template_param.is_empty() {
-            map.insert("TemplateParam", &template_param);
+    pub fn sms_query(
+        &self,
+        phone_number: &str,
+        biz_id: Option<&str>,
+        send_date: &NaiveDate,
+        current_page: u8,
+        page_size: u8,
+    ) -> Result<DayuQueryResponse, ErrorKind> {
+        if page_size > MAX_PAGE_SIZE {
+            return Err(ErrorKind::PageTooLarge(page_size));
         }
 
-        map.insert("Version", VERSION);
+        let send_date = send_date.format("%Y%m%d").to_string();
+        let page_size = page_size.to_string();
+        let current_page = current_page.to_string();
 
-        let mut forms = map.into_iter()
-            .map(|(key, value)| (key, urlencoding::encode(value)))
-            .collect::<Vec<(&str, String)>>();
-
-        let mut wait_sign = String::from("GET&%2F&");
-        wait_sign.push_str(&forms
-            .iter()
-            .fold(vec![], |mut wait_sign, &(key, ref value)| {
-                wait_sign.push(urlencoding::encode(&format!("{}={}", key, value)));
-                wait_sign
-            })
-            .join(&urlencoding::encode("&")));
-
-        PKey::hmac(format!("{}&", self.access_secret).as_bytes())
-            .and_then(|pkey| {
-                Signer::new(MessageDigest::sha1(), &pkey).and_then(|mut signer| {
-                    signer
-                        .update(wait_sign.as_bytes())
-                        .and_then(|_| signer.sign_to_vec())
-                })
-            })
-            .map_err(ErrorKind::Openssl)
-            .map(|ref signature| {
-                forms.push(("Signature", urlencoding::encode(&base64::encode(signature))))
-            })?;
-
-        Url::parse("http://dysmsapi.aliyuncs.com")
-            .map_err(ErrorKind::UrlParse)
-            .map(|mut url| {
-                url.set_query(Some(&forms
-                    .into_iter()
-                    .map(|(key, value)| format!("{}={}", key, value))
-                    .collect::<Vec<String>>()
-                    .join("&")));
-                url
-            })
-            .and_then(|url| reqwest::get(url).map_err(ErrorKind::Reqwest))
-            .and_then(|mut response| {
-                let mut body = String::new();
-                response
-                    .read_to_string(&mut body)
-                    .map_err(ErrorKind::Stdio)
-                    .map(|_| body)
-            })
-            .and_then(|body| {
-                println!("body: {}", body);
-                serde_json::from_str::<DayuResponse>(&body)
-                    .map_err(ErrorKind::SerdeJson)
-                    .and_then(|response| match response {
-                        DayuResponse::Success(success) => Ok(success),
-                        DayuResponse::Fail(fail) => {
-                            Err(ErrorKind::Dayu(format!("{}:{}", fail.code, fail.message)))
-                        }
-                    })
-            })
+        do_request!(
+            self,
+            "QuerySendDetails",
+            &[
+                ("PhoneNumber", phone_number),
+                ("BizId", biz_id.unwrap_or_else(|| "")),
+                ("SendDate", &send_date),
+                ("PageSize", &page_size),
+                ("CurrentPage", &current_page),
+            ],
+            Query
+        )
     }
 }
