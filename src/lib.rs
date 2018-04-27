@@ -183,7 +183,7 @@ macro_rules! do_request {
         map.insert("SignName", &$dayu.sign_name);
         map.insert("Version", VERSION);
 
-        for (name, value) in $params {
+        for &(name, value) in $params {
             if !value.is_empty() {
                 map.insert(name, value);
             }
