@@ -52,6 +52,7 @@ extern crate url;
 extern crate urlencoding;
 
 use std::collections::BTreeMap;
+use std::convert::AsRef;
 use std::fmt::{self, Display, Formatter};
 use std::io::Read;
 
@@ -269,13 +270,18 @@ impl Dayu {
     /// phones: support multi phone number
     /// template_code: SMS TEMPLATE CODE
     /// template_param: SMS TAPLATE PARAMS as JSON
-    pub fn sms_send(
+    pub fn sms_send<'a, T: AsRef<str>>(
         &self,
-        phones: &[&str],
+        phones: &[T],
         template_code: &str,
         template_param: Option<&Value>,
     ) -> Result<DayuSendResponse, ErrorKind> {
-        let phone_numbers = phones.join(",");
+        let phone_numbers = phones
+            .iter()
+            .map(|v| v.as_ref())
+            .collect::<Vec<&str>>()
+            .join(",");
+
         let template_param = match template_param {
             Some(param) => serde_json::to_string(param).map_err(ErrorKind::SerdeJson)?,
             None => String::new(),
@@ -293,6 +299,7 @@ impl Dayu {
         )
     }
 
+    /// query sms send detail
     pub fn sms_query(
         &self,
         phone_number: &str,
