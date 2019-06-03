@@ -1,6 +1,6 @@
 [package]
 name = "dayu"
-version = "0.2.4"
+version = "0.3.0"
 authors = ["Matrix <113445886@qq.com>"]
 description = "Alibaba's Dayu SMS SDK for Rust."
 license = "MIT"
@@ -12,7 +12,9 @@ edition = "2018"
 [dependencies]
 base64 = "0.10"
 chrono = "0.4"
+derive_more = "0.14"
 failure = "0.1"
+futures = "0.1"
 openssl = "0.10"
 reqwest = "0.9"
 serde = { "version" = "1.0", features = ["derive"] }
@@ -20,3 +22,6 @@ serde_json = "1.0"
 textnonce = "0.6"
 url = "1.7"
 urlencoding = "1.0"
+
+[dev-dependencies]
+tokio = "0.1"
