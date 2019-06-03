@@ -37,27 +37,15 @@
 //! }
 //! ```
 
-extern crate base64;
-extern crate chrono;
-#[macro_use]
-extern crate failure;
-extern crate openssl;
-extern crate reqwest;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-extern crate textnonce;
-extern crate url;
-extern crate urlencoding;
-
 use std::collections::BTreeMap;
 use std::convert::AsRef;
 use std::fmt::{self, Display, Formatter};
 use std::io::Read;
 
 use chrono::{NaiveDate, Utc};
+use failure::Fail;
 use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use textnonce::TextNonce;
 use url::Url;
@@ -189,18 +177,21 @@ macro_rules! do_request {
             }
         }
 
-        let mut forms = map.into_iter()
+        let mut forms = map
+            .into_iter()
             .map(|(key, value)| (key, urlencoding::encode(value)))
             .collect::<Vec<(&str, String)>>();
 
         let mut wait_sign = String::from("GET&%2F&");
-        wait_sign.push_str(&forms
-            .iter()
-            .fold(vec![], |mut wait_sign, &(key, ref value)| {
-                wait_sign.push(urlencoding::encode(&format!("{}={}", key, value)));
-                wait_sign
-            })
-            .join(&urlencoding::encode("&")));
+        wait_sign.push_str(
+            &forms
+                .iter()
+                .fold(vec![], |mut wait_sign, &(key, ref value)| {
+                    wait_sign.push(urlencoding::encode(&format!("{}={}", key, value)));
+                    wait_sign
+                })
+                .join(&urlencoding::encode("&")),
+        );
 
         PKey::hmac(format!("{}&", $dayu.access_secret).as_bytes())
             .and_then(|pkey| {
@@ -218,11 +209,13 @@ macro_rules! do_request {
                 Url::parse("http://dysmsapi.aliyuncs.com")
                     .map_err(ErrorKind::UrlParse)
                     .map(|mut url| {
-                        url.set_query(Some(&forms
-                            .into_iter()
-                            .map(|(key, value)| format!("{}={}", key, value))
-                            .collect::<Vec<String>>()
-                            .join("&")));
+                        url.set_query(Some(
+                            &forms
+                                .into_iter()
+                                .map(|(key, value)| format!("{}={}", key, value))
+                                .collect::<Vec<String>>()
+                                .join("&"),
+                        ));
                         url
                     })
                     .and_then(|url| reqwest::get(url).map_err(ErrorKind::Reqwest))
@@ -270,7 +263,7 @@ impl Dayu {
     /// phones: support multi phone number
     /// template_code: SMS TEMPLATE CODE
     /// template_param: SMS TAPLATE PARAMS as JSON
-    pub fn sms_send<'a, T: AsRef<str>>(
+    pub fn sms_send<T: AsRef<str>>(
         &self,
         phones: &[T],
         template_code: &str,
@@ -278,7 +271,7 @@ impl Dayu {
     ) -> Result<DayuSendResponse, ErrorKind> {
         let phone_numbers = phones
             .iter()
-            .map(|v| v.as_ref())
+            .map(AsRef::as_ref)
             .collect::<Vec<&str>>()
             .join(",");
 
@@ -304,7 +297,7 @@ impl Dayu {
         &self,
         phone_number: &str,
         biz_id: Option<&str>,
-        send_date: &NaiveDate,
+        send_date: NaiveDate,
         current_page: u8,
         page_size: u8,
     ) -> Result<DayuQueryResponse, ErrorKind> {
