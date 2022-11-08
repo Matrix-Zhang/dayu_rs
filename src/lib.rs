@@ -24,35 +24,30 @@
 //! ## Basic usage
 //!
 //! ```rust
-//! use dayu::Dayu;
-//! use serde_json::json;
+//!use dayu::Dayu;
+//!use serde_json::json;
 //!
-//! fn main() {
-//!     let mut dayu = Dayu::new();
-//!     dayu.set_access_key("access_key");
-//!     dayu.set_access_secret("access_secret");
-//!     dayu.set_sign_name("阿里云短信测试专用");
-//!     let mut rt = tokio::runtime::current_thread::Runtime::new().unwrap();
-//!     rt.block_on(dayu.sms_send(&["138XXXXXXXX"], "SMS_123456", Some(&json!({"customer": "Rust"})))).unwrap();
-//! }
+//!let dayu = Dayu::new()
+//!     .set_access_key("access_key")
+//!     .set_access_secret("access_secret")
+//!     .set_sign_name("阿里云测试短信");
+//!dayu.sms_send(&["138XXXXXXXX"], "SMS_123456", Some(&json!({"customer": "Rust"}))).await.unwrap();
 //! ```
 
-use std::collections::BTreeMap;
-use std::convert::AsRef;
-use std::fmt::{self, Display, Formatter};
+use std::{
+    collections::BTreeMap,
+    convert::AsRef,
+    fmt::{self, Display, Formatter},
+};
 
 use chrono::{NaiveDate, Utc};
-use derive_more::From;
-use failure::Fail;
-use futures::{
-    future::{self, Either},
-    Future, IntoFuture,
-};
+use futures_util::TryFutureExt;
 use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
-use reqwest::r#async::Client;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use textnonce::TextNonce;
+use thiserror::Error;
 use url::Url;
 
 static MAX_PAGE_SIZE: u8 = 50;
@@ -61,26 +56,26 @@ static SIGN_METHOD: &str = "HMAC-SHA1";
 static SIGNATURE_VERSION: &str = "1.0";
 static VERSION: &str = "2017-05-25";
 
-#[derive(Debug, Fail, From)]
-pub enum ErrorKind {
-    #[fail(display = "config of '{}' absence.", _0)]
+#[derive(Debug, Error)]
+pub enum DayuError {
+    #[error("config of '{0}' absence")]
     ConfigAbsence(&'static str),
-    #[fail(display = "dayu's error: {}", _0)]
+    #[error("dayu response error: {0}")]
     Dayu(DayuFailResponse),
-    #[fail(display = "openssl error: {}", _0)]
-    Openssl(openssl::error::ErrorStack),
-    #[fail(display = "page size '{}' too large, max is 50.", _0)]
+    #[error("openssl error: {0}")]
+    Openssl(#[from] openssl::error::ErrorStack),
+    #[error("page size '{0}' too large, max is 50")]
     PageTooLarge(u8),
-    #[fail(display = "reqwest error: {}", _0)]
-    Reqwest(reqwest::Error),
-    #[fail(display = "serde_json error: {}", _0)]
-    SerdeJson(serde_json::error::Error),
-    #[fail(display = "std's io error: {}", _0)]
-    Stdio(std::io::Error),
-    #[fail(display = "textnonce error: {}", _0)]
+    #[error("reqwest error: {0}")]
+    Reqwest(#[from] reqwest::Error),
+    #[error("serde_json error: {0}")]
+    SerdeJson(#[from] serde_json::error::Error),
+    #[error("std io error: {0}")]
+    Stdio(#[from] std::io::Error),
+    #[error("textnonce error: {0}")]
     TextNonce(String),
-    #[fail(display = "url parse error: {}", _0)]
-    UrlParse(url::ParseError),
+    #[error("url parse error: {0}")]
+    UrlParse(#[from] url::ParseError),
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,23 +140,23 @@ pub struct Dayu {
     sign_name: String,
 }
 
-fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, ErrorKind> {
+fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, DayuError> {
     if dayu.access_key.is_empty() {
-        return Err(ErrorKind::ConfigAbsence("access_key"));
+        return Err(DayuError::ConfigAbsence("access_key"));
     }
 
     if dayu.access_secret.is_empty() {
-        return Err(ErrorKind::ConfigAbsence("access_secret"));
+        return Err(DayuError::ConfigAbsence("access_secret"));
     }
 
     if dayu.sign_name.is_empty() {
-        return Err(ErrorKind::ConfigAbsence("sign_name"));
+        return Err(DayuError::ConfigAbsence("sign_name"));
     }
 
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     TextNonce::sized(32)
-        .map_err(Into::into)
+        .map_err(DayuError::TextNonce)
         .map(|v| v.to_string())
         .and_then(|text_nonce| {
             let mut map = BTreeMap::new();
@@ -183,7 +178,7 @@ fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, E
 
             let mut forms = map
                 .into_iter()
-                .map(|(key, value)| (key, urlencoding::encode(value)))
+                .map(|(key, value)| (key, urlencoding::encode(value).into_owned()))
                 .collect::<Vec<(&str, String)>>();
 
             let mut wait_sign = String::from("GET&%2F&");
@@ -191,7 +186,8 @@ fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, E
                 &forms
                     .iter()
                     .fold(vec![], |mut wait_sign, &(key, ref value)| {
-                        wait_sign.push(urlencoding::encode(&format!("{}={}", key, value)));
+                        wait_sign
+                            .push(urlencoding::encode(&format!("{}={}", key, value)).into_owned());
                         wait_sign
                     })
                     .join(&urlencoding::encode("&")),
@@ -207,10 +203,13 @@ fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, E
                 })
                 .map_err(Into::into)
                 .map(|ref signature| {
-                    forms.push(("Signature", urlencoding::encode(&base64::encode(signature))))
+                    forms.push((
+                        "Signature",
+                        urlencoding::encode(&base64::encode(signature)).into_owned(),
+                    ))
                 })
                 .and_then(|_| {
-                    Url::parse("http://dysmsapi.aliyuncs.com")
+                    Url::parse("https://dysmsapi.aliyuncs.com")
                         .map_err(Into::into)
                         .map(|mut url| {
                             url.set_query(Some(
@@ -228,22 +227,17 @@ fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, E
 
 macro_rules! do_request {
     ($dayu:expr, $action:expr, $params:expr, $type:tt) => {{
-        make_url($dayu, $action, $params)
-            .into_future()
-            .and_then(|url| {
-                Client::new()
-                    .get(url)
-                    .send()
-                    .and_then(|mut response| response.json::<DayuResponse>())
-                    .map_err(Into::into)
-                    .and_then(|json_response| {
-                        match json_response {
-                            DayuResponse::$type(v) => Ok(v),
-                            DayuResponse::Fail(fail) => Err(ErrorKind::Dayu(fail)),
-                            _ => unreachable!(),
-                        }
-                        .into_future()
-                    })
+        let url = make_url($dayu, $action, $params)?;
+        Client::new()
+            .get(url)
+            .send()
+            .and_then(|response| response.json::<DayuResponse>())
+            .await
+            .map_err(Into::into)
+            .and_then(|json_response| match json_response {
+                DayuResponse::$type(v) => Ok(v),
+                DayuResponse::Fail(fail) => Err(DayuError::Dayu(fail)),
+                _ => unreachable!(),
             })
     }};
 }
@@ -255,30 +249,33 @@ impl Dayu {
     }
 
     /// set dayu sdk's access key
-    pub fn set_access_key(&mut self, access_key: &str) {
+    pub fn set_access_key(mut self, access_key: &str) -> Self {
         self.access_key = access_key.to_owned();
+        self
     }
 
     /// set dayu sdk's access secret
-    pub fn set_access_secret(&mut self, access_secret: &str) {
+    pub fn set_access_secret(mut self, access_secret: &str) -> Self {
         self.access_secret = access_secret.to_owned();
+        self
     }
 
     /// set dayu sdk's sign name
-    pub fn set_sign_name(&mut self, sign_name: &str) {
+    pub fn set_sign_name(mut self, sign_name: &str) -> Self {
         self.sign_name = sign_name.to_owned();
+        self
     }
 
     /// start send sms
     /// phones: support multi phone number
     /// template_code: SMS TEMPLATE CODE
     /// template_param: SMS TEMPLATE PARAMS as JSON
-    pub fn sms_send<T: AsRef<str>>(
+    pub async fn sms_send<T: AsRef<str>>(
         &self,
         phones: &[T],
         template_code: &str,
         template_param: Option<&Value>,
-    ) -> impl Future<Item = DayuSendResponse, Error = ErrorKind> {
+    ) -> Result<DayuSendResponse, DayuError> {
         let phone_numbers = phones
             .iter()
             .map(AsRef::as_ref)
@@ -302,33 +299,33 @@ impl Dayu {
     }
 
     /// query sms send detail
-    pub fn sms_query(
+    pub async fn sms_query(
         &self,
         phone_number: &str,
         biz_id: Option<&str>,
         send_date: NaiveDate,
         current_page: u8,
         page_size: u8,
-    ) -> impl Future<Item = DayuQueryResponse, Error = ErrorKind> {
+    ) -> Result<DayuQueryResponse, DayuError> {
         if page_size > MAX_PAGE_SIZE {
-            return Either::A(future::err(ErrorKind::PageTooLarge(page_size)));
+            return Err(DayuError::PageTooLarge(page_size));
         }
 
         let send_date = send_date.format("%Y%m%d").to_string();
         let page_size = page_size.to_string();
         let current_page = current_page.to_string();
 
-        Either::B(do_request!(
+        do_request!(
             self,
             "QuerySendDetails",
             &[
                 ("PhoneNumber", phone_number),
-                ("BizId", biz_id.unwrap_or_else(|| "")),
+                ("BizId", biz_id.unwrap_or("")),
                 ("SendDate", &send_date),
                 ("PageSize", &page_size),
                 ("CurrentPage", &current_page),
             ],
             Query
-        ))
+        )
     }
 }
