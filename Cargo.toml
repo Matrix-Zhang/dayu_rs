@@ -1,6 +1,6 @@
 [package]
 name = "dayu"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Matrix <113445886@qq.com>"]
 description = "Alibaba's Dayu SMS SDK for Rust."
 license = "MIT"

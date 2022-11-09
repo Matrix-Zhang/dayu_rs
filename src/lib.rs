@@ -249,20 +249,20 @@ impl Dayu {
     }
 
     /// set dayu sdk's access key
-    pub fn set_access_key(mut self, access_key: &str) -> Self {
-        self.access_key = access_key.to_owned();
+    pub fn set_access_key(mut self, access_key: impl Into<String>) -> Self {
+        self.access_key = access_key.into();
         self
     }
 
     /// set dayu sdk's access secret
-    pub fn set_access_secret(mut self, access_secret: &str) -> Self {
-        self.access_secret = access_secret.to_owned();
+    pub fn set_access_secret(mut self, access_secret: impl Into<String>) -> Self {
+        self.access_secret = access_secret.into();
         self
     }
 
     /// set dayu sdk's sign name
-    pub fn set_sign_name(mut self, sign_name: &str) -> Self {
-        self.sign_name = sign_name.to_owned();
+    pub fn set_sign_name(mut self, sign_name: impl Into<String>) -> Self {
+        self.sign_name = sign_name.into();
         self
     }
 
