@@ -133,8 +133,9 @@ pub enum DayuResponse {
     Fail(DayuFailResponse),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Dayu {
+    client: Client,
     access_key: String,
     access_secret: String,
     sign_name: String,
@@ -228,7 +229,8 @@ fn make_url(dayu: &Dayu, action: &str, params: &[(&str, &str)]) -> Result<Url, D
 macro_rules! do_request {
     ($dayu:expr, $action:expr, $params:expr, $type:tt) => {{
         let url = make_url($dayu, $action, $params)?;
-        Client::new()
+        $dayu
+            .client
             .get(url)
             .send()
             .and_then(|response| response.json::<DayuResponse>())
@@ -244,8 +246,8 @@ macro_rules! do_request {
 
 impl Dayu {
     /// construct new dayu sdk instance
-    pub fn new() -> Dayu {
-        Dayu::default()
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// set dayu sdk's access key
@@ -273,7 +275,7 @@ impl Dayu {
     pub async fn sms_send<T: AsRef<str>>(
         &self,
         phones: &[T],
-        template_code: &str,
+        template_code: T,
         template_param: Option<&Value>,
     ) -> Result<DayuSendResponse, DayuError> {
         let phone_numbers = phones
@@ -290,7 +292,7 @@ impl Dayu {
             self,
             "SendSms",
             &[
-                ("TemplateCode", template_code),
+                ("TemplateCode", template_code.as_ref()),
                 ("PhoneNumbers", &phone_numbers),
                 ("TemplateParam", &template_param),
             ],
