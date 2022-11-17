@@ -272,9 +272,9 @@ impl Dayu {
     /// phones: support multi phone number
     /// template_code: SMS TEMPLATE CODE
     /// template_param: SMS TEMPLATE PARAMS as JSON
-    pub async fn sms_send<T: AsRef<str>>(
+    pub async fn sms_send<P: AsRef<str>, T: AsRef<str>>(
         &self,
-        phones: &[T],
+        phones: &[P],
         template_code: T,
         template_param: Option<&Value>,
     ) -> Result<DayuSendResponse, DayuError> {
